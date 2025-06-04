@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="description" content="Stunning Pedometer Web App with 3D visualizations">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.png">
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <title>Pedometer App</title>
+  <style>
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-15px); }
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+      100% { transform: scale(1); }
+    }
+    .avatar-container {
+      transition: transform 0.3s ease-in-out;
+    }
+    .avatar-walking {
+      animation: bounce 0.4s infinite;
+    }
+    .stat-card {
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    .stat-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+    }
+    .progress-bar {
+      transition: width 0.5s ease-in-out;
+      background: linear-gradient(to right, #3b82f6, #8b5cf6);
+    }
+    .pulse {
+      animation: pulse 2s infinite;
+    }
+    #canvas-container {
+      position: relative;
+      overflow: hidden;
+    }
+    .particle {
+      position: absolute;
+      background: rgba(255, 255, 255, 0.7);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-indigo-200 via-purple-200 to-pink-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-700 min-h-screen flex flex-col">
+  <div id="container" class="flex-1 flex flex-col">
+    <div id="canvas-container" class="relative flex-1"></div>
+    <div id="stats" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 p-6 max-w-7xl mx-auto">
+      <div class="stat-card bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl pulse">
+        <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-200">Steps Today</h3>
+        <p id="steps-today" class="text-4xl font-bold text-indigo-600 dark:text-indigo-400">0</p>
+        <div class="progress mt-4 bg-gray-200 rounded-full h-3">
+          <div id="progress-bar" class="progress-bar h-3 rounded-full" style="width: 0%"></div>
+        </div>
+      </div>
+      <div class="stat-card bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl">
+        <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-200">Calories Burned</h3>
+        <p id="calories" class="text-4xl font-bold text-green-600 dark:text-green-400">0 kcal</p>
+      </div>
+      <div class="stat-card bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl">
+        <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-200">Distance</h3>
+        <p id="distance" class="text-4xl font-bold text-purple-600 dark:text-purple-400">0 km</p>
+      </div>
+    </div>
+    <div id="graph-container" class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl max-w-7xl mx-auto mb-6">
+      <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-4">Weekly Progress</h3>
+      <canvas id="weekly-graph" class="w-full h-64"></canvas>
+    </div>
+    <div id="controls" class="bg-gray-900 dark:bg-gray-950 p-4 flex flex-col sm:flex-row justify-center items-center gap-4">
+      <select id="theme-select" class="p-3 rounded-lg bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200">
+        <option value="light">Light Theme</option>
+        <option value="dark">Dark Theme</option>
+      </select>
+      <select id="avatar-select" class="p-3 rounded-lg bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200">
+        <option value="runner">Runner</option>
+        <option value="walker">Walker</option>
+      </select>
+      <input type="number" id="goal-input" placeholder="Step Goal" value="10000" class="p-3 rounded-lg bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 w-32">
+      <button id="share-btn" class="p-3 bg-gradient-to-r from-green-500 to-teal-500 text-white rounded-lg hover:from-green-600 hover:to-teal-600 transition">Share Progress</button>
+    </div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+  <script>
+    // Pedometer logic
+    const STEP_THRESHOLD = 1.2; // Lowered for higher sensitivity
+    const STEP_COOLDOWN = 150; // Faster step detection
+    const CALORIES_PER_STEP = 0.04;
+    const METERS_PER_STEP = 0.762;
+    let stepsToday = 0;
+    let stepGoal = 10000;
+    let lastAcceleration = 0;
+    let lastStepTime = 0;
+    let accelerationHistory = [];
+    let avatarType = 'runner';
+    let theme = 'light';
+    let isWalking = false;
+
+    // Data storage
+    const storage = {
+      saveData() {
+        localStorage.setItem('pedometerData', JSON.stringify({
+          steps: stepsToday,
+          date: new Date().toDateString(),
+          goal: stepGoal,
+          history: storage.getHistory()
+        }));
+      },
+      loadData() {
+        const data = JSON.parse(localStorage.getItem('pedometerData') || '{}');
+        if (data.date === new Date().toDateString()) {
+          stepsToday = data.steps || 0;
+          stepGoal = data.goal || 10000;
+        } else {
+          stepsToday = 0;
+          storage.saveData();
+        }
+        updateStats();
+        updateGraph();
+      },
+      getHistory() {
+        return JSON.parse(localStorage.getItem('stepHistory') || '{}');
+      },
+      saveHistory() {
+        const history = storage.getHistory();
+        history[new Date().toDateString()] = stepsToday;
+        localStorage.setItem('stepHistory', JSON.stringify(history));
+      }
+    };
+
+    // 3D Visualization
+    let scene, camera, renderer, avatar;
+    function initThreeJS() {
+      try {
+        if (typeof THREE === 'undefined') throw new Error('Three.js not loaded');
+        scene = new THREE.Scene();
+        if (!scene) throw new Error('Failed to create Three.js scene');
+
+        scene.background = new THREE.Color(theme === 'light' ? 0xe0e7ff : 0x1a202c);
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / (window.innerHeight * 0.5), 0.1, 1000);
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight * 0.5);
+        const canvasContainer = document.getElementById('canvas-container');
+        if (!canvasContainer) throw new Error('Canvas container not found');
+        canvasContainer.appendChild(renderer.domElement);
+        camera.position.set(0, 2, 5);
+        camera.lookAt(0, 1, 0);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.9);
+        directionalLight.position.set(5, 5, 5);
+        scene.add(directionalLight);
+
+        // Avatar (human-like figure)
+        const bodyGeometry = new THREE.CylinderGeometry(0.3, 0.3, 1, 32);
+        const headGeometry = new THREE.SphereGeometry(0.2, 32, 32);
+        const material = new THREE.MeshStandardMaterial({ 
+          color: avatarType === 'runner' ? 0xff4d4d : 0x4dff4d,
+          metalness: 0.2,
+          roughness: 0.4
+        });
+        avatar = new THREE.Group();
+        const body = new THREE.Mesh(bodyGeometry, material);
+        const head = new THREE.Mesh(headGeometry, material);
+        head.position.y = 0.8;
+        avatar.add(body, head);
+        avatar.position.y = 1;
+        scene.add(avatar);
+
+        // Ground
+        const groundGeometry = new THREE.PlaneGeometry(100, 100);
+        const groundMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc, side: THREE.DoubleSide });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = Math.PI / 2;
+        ground.position.y = -0.5;
+        scene.add(ground);
+
+        // Particle background
+        initParticles();
+
+        animate();
+      } catch (error) {
+        console.error('Error initializing Three.js:', error);
+        alert('Failed to initialize 3D visualization. Please try refreshing the page.');
+      }
+    }
+
+    function animate() {
+      if (!renderer || !scene || !camera) {
+        console.error('Three.js components not initialized');
+        return;
+      }
+      requestAnimationFrame(animate);
+      if (isWalking) {
+        avatar.rotation.y += 0.05;
+        avatar.position.y = 1 + Math.sin(Date.now() * 0.008) * 0.15;
+      } else {
+        avatar.rotation.y += 0.01;
+      }
+      renderer.render(scene, camera);
+    }
+
+    // Particle system
+    function initParticles() {
+      const canvasContainer = document.getElementById('canvas-container');
+      for (let i = 0; i < 30; i++) { // Reduced for performance
+        const particle = document.createElement('div');
+        particle.className = 'particle';
+        particle.style.width = `${Math.random() * 4 + 2}px`;
+        particle.style.height = particle.style.width;
+        particle.style.left = `${Math.random() * 100}%`;
+        particle.style.top = `${Math.random() * 100}%`;
+        particle.style.animation = `float ${Math.random() * 4 + 2}s infinite`;
+        canvasContainer.appendChild(particle);
+      }
+      const style = document.createElement('style');
+      style.textContent = `
+        @keyframes float {
+          0% { transform: translateY(0); opacity: 0.7; }
+          50% { transform: translateY(-15px); opacity: 0.4; }
+          100% { transform: translateY(0); opacity: 0.7; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    // Improved step counting
+    function handleMotion(event) {
+      const acc = event.accelerationIncludingGravity;
+      if (!acc) {
+        console.warn('No acceleration data available');
+        return;
+      }
+      const magnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
+      accelerationHistory.push(magnitude);
+      if (accelerationHistory.length > 20) accelerationHistory.shift();
+
+      // Dynamic threshold
+      const avgAcceleration = accelerationHistory.reduce((sum, val) => sum + val, 0) / accelerationHistory.length;
+      const dynamicThreshold = Math.max(STEP_THRESHOLD, avgAcceleration * 1.1);
+      const now = Date.now();
+
+      // Log for debugging
+      console.log(`Magnitude: ${magnitude.toFixed(2)}, Threshold: ${dynamicThreshold.toFixed(2)}, Last Acc: ${lastAcceleration.toFixed(2)}`);
+
+      if (magnitude > dynamicThreshold && now - lastStepTime > STEP_COOLDOWN && Math.abs(magnitude - lastAcceleration) > 0.4) {
+        stepsToday++;
+        lastStepTime = now;
+        isWalking = true;
+        setTimeout(() => isWalking = false, 600);
+        storage.saveData();
+        storage.saveHistory();
+        updateStats();
+        updateProgressBar();
+        updateGraph();
+        checkAchievements();
+      }
+      lastAcceleration = magnitude;
+    }
+
+    // Update UI
+    function updateStats() {
+      const stepsTodayEl = document.getElementById('steps-today');
+      const caloriesEl = document.getElementById('calories');
+      const distanceEl = document.getElementById('distance');
+      const canvasContainer = document.getElementById('canvas-container');
+      if (stepsTodayEl) stepsTodayEl.textContent = stepsToday;
+      if (caloriesEl) caloriesEl.textContent = `${(stepsToday * CALORIES_PER_STEP).toFixed(1)} kcal`;
+      if (distanceEl) distanceEl.textContent = `${(stepsToday * METERS_PER_STEP / 1000).toFixed(2)} km`;
+      if (canvasContainer) canvasContainer.classList.toggle('avatar-walking', isWalking);
+    }
+
+    function updateProgressBar() {
+      const progressBar = document.getElementById('progress-bar');
+      if (progressBar) {
+        const progress = Math.min((stepsToday / stepGoal) * 100, 100);
+        progressBar.style.width = `${progress}%`;
+      }
+    }
+
+    // Weekly progress graph
+    let chart;
+    function initGraph() {
+      const canvas = document.getElementById('weekly-graph');
+      if (!canvas) {
+        console.error('Weekly graph canvas not found');
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: [],
+          datasets: [{
+            label: 'Steps',
+            data: [],
+            backgroundColor: 'rgba(79, 70, 229, 0.5)',
+            borderColor: 'rgba(79, 70, 229, 1)',
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: { y: { beginAtZero: true } },
+          animation: { duration: 1000, easing: 'easeInOutQuad' }
+        }
+      });
+    }
+
+    function updateGraph() {
+      if (!chart) return;
+      const history = storage.getHistory();
+      const dates = [];
+      const steps = [];
+      const today = new Date();
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date(today);
+        date.setDate(today.getDate() - i);
+        const dateString = date.toDateString();
+        dates.push(date.toLocaleDateString('en-US', { weekday: 'short' }));
+        steps.push(history[dateString] || 0);
+      }
+      chart.data.labels = dates;
+      chart.data.datasets[0].data = steps;
+      chart.update();
+    }
+
+    // Achievements
+    function checkAchievements() {
+      if (stepsToday >= stepGoal) {
+        showAchievement('Goal Reached!', `You hit your ${stepGoal} step goal!`);
+      }
+      if (stepsToday >= 20000) {
+        showAchievement('Super Walker!', 'You walked 20,000 steps today!');
+      }
+    }
+
+    function showAchievement(title, message) {
+      if (!('Notification' in window)) return;
+      Notification.requestPermission().then(permission => {
+        if (permission === 'granted') {
+          new Notification(title, { body: message, icon: 'icon.png' });
+        }
+      });
+    }
+
+    // Controls
+    document.getElementById('theme-select').addEventListener('change', (e) => {
+      theme = e.target.value;
+      document.body.classList.toggle('dark', theme === 'dark');
+      if (scene) scene.background = new THREE.Color(theme === 'light' ? 0xe0e7ff : 0x1a202c);
+    });
+
+    document.getElementById('avatar-select').addEventListener('change', (e) => {
+      avatarType = e.target.value;
+      if (avatar) {
+        avatar.children.forEach(child => child.material.color.set(avatarType === 'runner' ? 0xff4d4d : 0x4dff4d));
+      }
+    });
+
+    document.getElementById('goal-input').addEventListener('change', (e) => {
+      stepGoal = parseInt(e.target.value) || 10000;
+      storage.saveData();
+      updateProgressBar();
+    });
+
+    document.getElementById('share-btn').addEventListener('click', () => {
+      if (navigator.share) {
+        navigator.share({
+          title: 'My Pedometer Progress',
+          text: `I walked ${stepsToday} steps today! Join me in staying active!`,
+          url: window.location.href
+        });
+      } else {
+        alert('Share feature not supported on this device.');
+      }
+    });
+
+    // Device motion with diagnostics
+    function setupMotion() {
+      if (!window.DeviceMotionEvent) {
+        alert('Device motion not supported on this device.');
+        console.error('DeviceMotionEvent not available');
+        return;
+      }
+
+      if (typeof DeviceMotionEvent.requestPermission === 'function') {
+        DeviceMotionEvent.requestPermission()
+          .then(permission => {
+            if (permission === 'granted') {
+              window.addEventListener('devicemotion', handleMotion);
+              alert('Motion access granted. Start walking to count steps!');
+            } else {
+              alert('Motion access denied. Steps cannot be counted.');
+              console.error('Motion permission denied');
+            }
+          })
+          .catch(err => {
+            console.error('DeviceMotion permission error:', err);
+            alert('Error accessing motion data. Please try again.');
+          });
+      } else {
+        window.addEventListener('devicemotion', handleMotion);
+        alert('Motion access enabled. Start walking to count steps!');
+      }
+    }
+
+    // PWA setup
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(err => console.error('Service Worker Error:', err));
+    }
+
+    // Initialize
+    storage.loadData();
+    initThreeJS();
+    initGraph();
+    setupMotion();
+
+    // Handle window resize
+    window.addEventListener('resize', () => {
+      if (camera && renderer) {
+        camera.aspect = window.innerWidth / (window.innerHeight * 0.5);
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight * 0.5);
+      }
+    });
+  </script>
+</body>
+</html>
